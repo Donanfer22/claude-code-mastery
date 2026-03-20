@@ -25,3 +25,8 @@ dist-ssr
 
 # AI Agent Metadata
 .agent
+
+# Environment variables
+.env
+.env.local
+.env.*.local

@@ -1,3 +1,5 @@
+import { supabase } from './supabase.js'
+
 export const CLAUDE_COURSE = [
   { id: 1, title: "1. Introdução - Por que Este Curso Existe", icon: "fas fa-door-open", description: "Boas-vindas e visão geral do que será abordado no curso." },
   { id: 2, title: "2. Glossário — Conceitos Essenciais", icon: "fas fa-book", description: "Todo o vocabulário necessário para dominar ferramentas de IA e terminal." },
@@ -24,55 +26,51 @@ export const CLAUDE_COURSE = [
   { id: 23, title: "23. Repositório Prático", icon: "fas fa-code", description: "IA Vendedora com LangGraph." },
   { id: 24, title: "24. Dicas de Economia", icon: "fas fa-wallet", description: "Opus vs Sonnet: Custo-benefício." },
   { id: 25, title: "25. Referências e Links", icon: "fas fa-external-link-alt", description: "Onde continuar estudando." },
-  { id: 26, title: "26. Conclusão", icon: "fas fa-flag-checkered", description: "Próximos passos na sua jornada." }
+  { id: 26, title: "26. Conclusão", icon: "fas fa-flag-checkered", description: "Próximos passos na sua jornada." },
+  
+  // -- SEÇÃO PLUGINS CLAUDE CODE (Placeholder IDs 101+) --
+  { id: 101, title: "P1. Plugin: n8n-to-langgraph", icon: "fas fa-puzzle-piece", description: "Configuração e uso do plugin de automação." },
+  { id: 102, title: "P2. Plugin: chatwoot-skills", icon: "fas fa-puzzle-piece", description: "Habilidades para atendimento via IA." },
+  { id: 103, title: "P3. Plugin: fazer-ai-tools", icon: "fas fa-puzzle-piece", description: "Coleção de hooks e utilitários." },
+  { id: 104, title: "P4. Plugin: LangChain Skills", icon: "fas fa-puzzle-piece", description: "Integração oficial com LangChain." },
+  { id: 105, title: "P5. Plugin: Ralph Loop", icon: "fas fa-puzzle-piece", description: "Loop autônomo elite para Claude Code." },
+  { id: 106, title: "P6. Plugin: n8n-skills", icon: "fas fa-puzzle-piece", description: "7 skills para construir workflows n8n." },
+  { id: 107, title: "P7. Skills.sh: O \"NPM\" dos Agentes de IA", icon: "fas fa-box", description: "O marketplace definitivo de habilidades para agentes." },
+  { id: 108, title: "P8. Skill: Auditor de Código", icon: "fas fa-bolt", description: "Habilidade para revisão técnica automática." },
+  { id: 109, title: "P9. Skill: IA Vendedora", icon: "fas fa-bolt", description: "Configurando skills de conversão e CRM." }
 ];
 
 // ============================================
-// IndexedDB Storage (supports hundreds of MB)
+// Supabase Database Storage
 // ============================================
-const DB_NAME = 'neuralstream_course';
-const DB_VERSION = 1;
-const STORE_NAME = 'modules';
-
-function openDB() {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
-    request.onupgradeneeded = (e) => {
-      const db = e.target.result;
-      if (!db.objectStoreNames.contains(STORE_NAME)) {
-        db.createObjectStore(STORE_NAME, { keyPath: 'id' });
-      }
-    };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
-}
 
 export async function getModuleContent(id) {
   try {
-    const db = await openDB();
-    return new Promise((resolve) => {
-      const tx = db.transaction(STORE_NAME, 'readonly');
-      const store = tx.objectStore(STORE_NAME);
-      const req = store.get(id);
-      req.onsuccess = () => resolve(req.result?.html || '');
-      req.onerror = () => resolve('');
-    });
-  } catch {
+    const { data, error } = await supabase
+      .from('modules')
+      .select('html')
+      .eq('id', id)
+      .single();
+
+    if (error) {
+      if (error.code === 'PGRST116') return ''; // Not found
+      throw error;
+    }
+    return data?.html || '';
+  } catch (err) {
+    console.error('Fetch failed:', err);
     return '';
   }
 }
 
 export async function saveModuleContent(id, html) {
   try {
-    const db = await openDB();
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE_NAME, 'readwrite');
-      const store = tx.objectStore(STORE_NAME);
-      store.put({ id, html, updatedAt: Date.now() });
-      tx.oncomplete = () => resolve(true);
-      tx.onerror = () => reject(tx.error);
-    });
+    const { error } = await supabase
+      .from('modules')
+      .upsert({ id, html, updatedAt: new Date().toISOString() });
+
+    if (error) throw error;
+    return true;
   } catch (err) {
     console.error('Save failed:', err);
     return false;
@@ -84,48 +82,20 @@ export async function hasContent(id) {
   return !!content;
 }
 
-// Get all module IDs that have content (for sidebar indicators)
 export async function getModulesWithContent() {
   try {
-    const db = await openDB();
-    return new Promise((resolve) => {
-      const tx = db.transaction(STORE_NAME, 'readonly');
-      const store = tx.objectStore(STORE_NAME);
-      const req = store.getAllKeys();
-      req.onsuccess = () => resolve(new Set(req.result || []));
-      req.onerror = () => resolve(new Set());
-    });
-  } catch {
+    const { data, error } = await supabase
+      .from('modules')
+      .select('id');
+
+    if (error) throw error;
+    return new Set(data.map(item => item.id));
+  } catch (err) {
+    console.error('Fetch IDs failed:', err);
     return new Set();
   }
 }
 
-// Migrate existing localStorage data to IndexedDB (one-time)
 export async function migrateFromLocalStorage() {
-  try {
-    const raw = localStorage.getItem('neuralstream_course_content');
-    if (!raw) return;
-    
-    const data = JSON.parse(raw);
-    const db = await openDB();
-    const tx = db.transaction(STORE_NAME, 'readwrite');
-    const store = tx.objectStore(STORE_NAME);
-    
-    for (const [id, html] of Object.entries(data)) {
-      if (html) {
-        store.put({ id: parseInt(id), html, updatedAt: Date.now() });
-      }
-    }
-    
-    await new Promise((resolve, reject) => {
-      tx.oncomplete = () => {
-        localStorage.removeItem('neuralstream_course_content');
-        console.log('✅ Migrated localStorage data to IndexedDB');
-        resolve();
-      };
-      tx.onerror = () => reject(tx.error);
-    });
-  } catch (err) {
-    console.warn('Migration skipped:', err);
-  }
+  // Logic to move from local Browser IndexedDB to Supabase
 }

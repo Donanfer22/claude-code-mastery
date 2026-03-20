@@ -11,5 +11,8 @@
   "devDependencies": {
     "pdf-parse": "^2.4.5",
     "vite": "^8.0.1"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.99.3"
   }
 }
