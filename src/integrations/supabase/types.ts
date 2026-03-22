@@ -14,6 +14,33 @@ export type Database = {
   }
   public: {
     Tables: {
+      course_sections: {
+        Row: {
+          created_at: string
+          icon: string | null
+          id: number
+          main_category: string
+          order: number | null
+          title: string
+        }
+        Insert: {
+          created_at?: string
+          icon?: string | null
+          id?: number
+          main_category?: string
+          order?: number | null
+          title: string
+        }
+        Update: {
+          created_at?: string
+          icon?: string | null
+          id?: number
+          main_category?: string
+          order?: number | null
+          title?: string
+        }
+        Relationships: []
+      }
       courses: {
         Row: {
           category: string
@@ -106,21 +133,44 @@ export type Database = {
       }
       modules: {
         Row: {
+          description: string | null
           html: string | null
+          icon: string | null
           id: number
+          order: number | null
+          section_id: number | null
+          title: string | null
           updatedAt: string | null
         }
         Insert: {
+          description?: string | null
           html?: string | null
+          icon?: string | null
           id: number
+          order?: number | null
+          section_id?: number | null
+          title?: string | null
           updatedAt?: string | null
         }
         Update: {
+          description?: string | null
           html?: string | null
+          icon?: string | null
           id?: number
+          order?: number | null
+          section_id?: number | null
+          title?: string | null
           updatedAt?: string | null
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "modules_section_id_fkey"
+            columns: ["section_id"]
+            isOneToOne: false
+            referencedRelation: "course_sections"
+            referencedColumns: ["id"]
+          },
+        ]
       }
     }
     Views: {
