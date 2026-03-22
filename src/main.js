@@ -1,7 +1,7 @@
 import './style.css'
 import avatarImg from './assets/avatar.png'
-import postAiImg from './assets/post-ai.png'
-import { getModuleContent, saveModuleContent, getModulesWithContent, migrateFromLocalStorage, getCourseData, addSection, addModule, migrateToSupabase } from './course-data.js'
+
+import { getModuleContent, saveModuleContent, getModulesWithContent, migrateFromLocalStorage, getCourseData, addSection, addModule, migrateToSupabase, deleteModule, updateModuleOrder } from './course-data.js'
 import { supabase } from './supabase.js'
 
 const app = document.querySelector('#app');
@@ -94,7 +94,7 @@ function renderHome() {
             </div>
           </div>
           <div style="flex: 1; min-width: 300px; position: relative; z-index: 1;">
-            <img src="${postAiImg}" alt="Claude AI" style="width: 100%; height: 320px; object-fit: cover; border-radius: 18px; box-shadow: 0 20px 40px rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.1);">
+            <img src="https://nbelksrelzzrrmxlegjb.supabase.co/storage/v1/object/public/media/default.gif" alt="Claude AI" style="width: 100%; height: 320px; object-fit: cover; border-radius: 18px; box-shadow: 0 20px 40px rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.1);">
           </div>
         </div>
 
@@ -216,12 +216,19 @@ function renderClaudeCourse(activeModuleId, savedContent, courseData) {
               ${modules.filter(m => m.section_id === section.id).map(mod => `
                 <div class="course-nav-item ${mod.id === activeModuleId ? 'active' : ''}" data-id="${mod.id}">
                   <i class="${mod.icon || 'fas fa-chevron-right'}"></i>
-                  <div style="flex: 1;">
-                    <div style="font-size: 0.85rem; font-weight: 600;">${mod.title}</div>
-                    <div style="font-size: 0.7rem; color: var(--text-muted); opacity: 0.8;">${mod.description || 'Conteúdo do módulo'}</div>
+                  <div style="flex: 1; overflow: hidden; text-overflow: ellipsis;">
+                    <div style="font-size: 0.85rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${mod.title}</div>
+                    <div style="font-size: 0.7rem; color: var(--text-muted); opacity: 0.8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${mod.description || 'Conteúdo do módulo'}</div>
                   </div>
-                  ${modulesWithContent.has(mod.id) ? '<i class="fas fa-check-circle" style="font-size: 0.6rem; color: #22c55e;"></i>' : ''}
-                  ${mod.id === activeModuleId ? '<i class="fas fa-play" style="font-size: 0.6rem; color: var(--accent-primary);"></i>' : ''}
+                  
+                  <div class="mod-admin-controls" style="display: ${isAdmin ? 'flex' : 'none'}; gap: 5px; margin-left: 8px;">
+                    <button class="btn-move-mod" data-id="${mod.id}" data-dir="up" title="Mover para cima" style="background:transparent; border:none; color:var(--text-muted); padding: 2px; cursor:pointer;"><i class="fas fa-arrow-up" style="font-size: 0.7rem;"></i></button>
+                    <button class="btn-move-mod" data-id="${mod.id}" data-dir="down" title="Mover para baixo" style="background:transparent; border:none; color:var(--text-muted); padding: 2px; cursor:pointer;"><i class="fas fa-arrow-down" style="font-size: 0.7rem;"></i></button>
+                    <button class="btn-delete-mod" data-id="${mod.id}" title="Excluir módulo" style="background:transparent; border:none; color:#ef4444; padding: 2px; cursor:pointer; opacity: 0.7;"><i class="fas fa-trash-alt" style="font-size: 0.7rem;"></i></button>
+                  </div>
+
+                  ${modulesWithContent.has(mod.id) && !isAdmin ? '<i class="fas fa-check-circle" style="font-size: 0.6rem; color: #22c55e; margin-left: 5px;"></i>' : ''}
+                  ${mod.id === activeModuleId ? '<i class="fas fa-play" style="font-size: 0.6rem; color: var(--accent-primary); margin-left: 5px;"></i>' : ''}
                 </div>
               `).join('')}
             </div>
@@ -708,7 +715,70 @@ async function init() {
     if (e.target.closest('#user-profile-btn')) showLoginMenu();
     if (e.target.closest('#btn-add-section')) showAddSectionModal(e.target.closest('#btn-add-section').dataset.category);
     if (e.target.closest('.btn-add-module')) showAddModuleModal(parseInt(e.target.closest('.btn-add-module').dataset.sectionId));
+    
+    // Move Module
+    const moveBtn = e.target.closest('.btn-move-mod');
+    if (moveBtn) {
+        e.stopPropagation();
+        handleMoveModule(parseInt(moveBtn.dataset.id), moveBtn.dataset.dir);
+    }
+
+    // Delete Module
+    const deleteBtn = e.target.closest('.btn-delete-mod');
+    if (deleteBtn) {
+        e.stopPropagation();
+        handleDeleteModule(parseInt(deleteBtn.dataset.id));
+    }
   };
+}
+
+async function handleMoveModule(moduleId, direction) {
+    const courseData = await getCourseData();
+    const modules = courseData.modules;
+    const activeMod = modules.find(m => m.id === moduleId);
+    if (!activeMod) return;
+
+    // Filter modules in the same section
+    const sectionModules = modules.filter(m => m.section_id === activeMod.section_id).sort((a,b) => (a.order || 0) - (b.order || 0));
+    const currentIndex = sectionModules.findIndex(m => m.id === moduleId);
+
+    if (direction === 'up' && currentIndex > 0) {
+        const prevMod = sectionModules[currentIndex - 1];
+        const oldOrder = activeMod.order || 0;
+        const newOrder = prevMod.order || 0;
+        
+        await updateModuleOrder(activeMod.id, newOrder);
+        await updateModuleOrder(prevMod.id, oldOrder);
+        showToast('Ordem atualizada! 🔼');
+        loadAndRenderCourse(moduleId, document.querySelector('.main-wrapper'));
+    } else if (direction === 'down' && currentIndex < sectionModules.length - 1) {
+        const nextMod = sectionModules[currentIndex + 1];
+        const oldOrder = activeMod.order || 0;
+        const newOrder = nextMod.order || 0;
+        
+        await updateModuleOrder(activeMod.id, newOrder);
+        await updateModuleOrder(nextMod.id, oldOrder);
+        showToast('Ordem atualizada! 🔽');
+        loadAndRenderCourse(moduleId, document.querySelector('.main-wrapper'));
+    }
+}
+
+async function handleDeleteModule(moduleId) {
+    if (confirm('Tem certeza que deseja excluir este módulo? Esta ação não pode ser desfeita.')) {
+        const success = await deleteModule(moduleId);
+        if (success) {
+            showToast('Módulo excluído com sucesso! 🗑️');
+            // Load the first module of the course or just the home
+            const courseData = await getCourseData();
+            if (courseData.modules.length > 0) {
+                loadAndRenderCourse(courseData.modules[0].id, document.querySelector('.main-wrapper'));
+            } else {
+                renderHomeView();
+            }
+        } else {
+            showToast('Erro ao excluir módulo.', 'error');
+        }
+    }
 }
 
 init();
