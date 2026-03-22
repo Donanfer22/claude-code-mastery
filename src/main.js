@@ -1,12 +1,40 @@
 import './style.css'
 import avatarImg from './assets/avatar.png'
 import postAiImg from './assets/post-ai.png'
-import { CLAUDE_COURSE, getModuleContent, saveModuleContent, getModulesWithContent, migrateFromLocalStorage } from './course-data.js'
+import { getModuleContent, saveModuleContent, getModulesWithContent, migrateFromLocalStorage, getCourseData, addSection, addModule, migrateToSupabase } from './course-data.js'
+import { supabase } from './supabase.js'
 
 const app = document.querySelector('#app');
 let currentQuill = null;
 let isEditing = false;
 let modulesWithContent = new Set();
+let session = null;
+let isAdmin = false;
+
+const ADMIN_UID = '74732769-5ee3-44f2-bdee-5e115632e918';
+const ADMIN_EMAIL = 'fernandoborgescerqueira@gmail.com';
+
+// Auth state listener
+supabase.auth.onAuthStateChange((_event, _session) => {
+  session = _session;
+  isAdmin = session?.user?.id === ADMIN_UID || session?.user?.email === ADMIN_EMAIL;
+  
+  // Re-render current view if session changes
+  const activeNavItem = document.querySelector('.nav-item.active');
+  if (activeNavItem) {
+      if (activeNavItem.id === 'nav-feed') renderHomeView();
+      else if (activeNavItem.id === 'nav-claude') {
+          const activeModule = document.querySelector('.course-nav-item.active');
+          const modId = activeModule ? parseInt(activeModule.dataset.id) : 1;
+          loadAndRenderCourse(modId, document.querySelector('.main-wrapper'));
+      }
+      else if (activeNavItem.id === 'nav-plugins') {
+          const activeModule = document.querySelector('.course-nav-item.active');
+          const modId = activeModule ? parseInt(activeModule.dataset.id) : 101;
+          loadAndRenderCourse(modId, document.querySelector('.main-wrapper'));
+      }
+  }
+});
 
 // Utility to compress images before saving to Supabase
 async function compressImage(base64Str, maxWidth = 1200, quality = 0.7) {
@@ -40,9 +68,9 @@ function renderHome() {
         <input type="text" placeholder="Pesquisar no curso...">
       </div>
       <div class="header-actions">
-        <div class="user-profile">
-          <div class="user-avatar" style="background: linear-gradient(135deg, #0ea5e9, #2563eb);">F</div>
-          <span style="font-size: 0.9rem; font-weight: 500;">Fernando Cerqueira</span>
+        <div class="user-profile" id="user-profile-btn">
+          <div class="user-avatar" style="background: linear-gradient(135deg, #0ea5e9, #2563eb);">${isAdmin ? 'A' : 'F'}</div>
+          <span style="font-size: 0.9rem; font-weight: 500;">${isAdmin ? 'Fernando (Admin)' : 'Fernando Cerqueira'}</span>
           <i class="fas fa-chevron-down" style="font-size: 0.7rem; color: #64748b;"></i>
         </div>
       </div>
@@ -144,33 +172,16 @@ function renderHome() {
   `;
 }
 
-function renderClaudeCourse(activeModuleId = 1, savedContent = '') {
-  const activeModule = CLAUDE_COURSE.find(m => m.id === activeModuleId);
+function renderClaudeCourse(activeModuleId, savedContent, courseData) {
+  const { sections, modules } = courseData;
+  const activeModule = modules.find(m => m.id === activeModuleId) || modules[0];
   
-  // Decide which modules to show in the sidebar based on where the user is
-  const isPluginsSection = activeModuleId >= 100;
+  // Decide which category to show
+  const currentSection = sections.find(s => s.id === activeModule.section_id);
+  const mainCategory = currentSection?.main_category || 'course';
   
-  let groups = [];
-  let sidebarTitle = "";
-  
-  if (isPluginsSection) {
-    sidebarTitle = "Seção de Plugins";
-    groups = [
-      { title: "Bibliotecas de Plugins", range: [101, 106] },
-      { title: "Skills Automáticas", range: [107, 109] }
-    ];
-  } else {
-    sidebarTitle = "Módulos do Curso";
-    groups = [
-      { title: "Fundamentos", range: [1, 3] },
-      { title: "O Novo Motor", range: [4, 6] },
-      { title: "Mãos na Massa", range: [7, 8] },
-      { title: "Engenharia de Memória", range: [9, 10] },
-      { title: "Operação Avançada", range: [11, 14] },
-      { title: "Automação Elite", range: [15, 18] },
-      { title: "Aceleradores de Carreira", range: [22, 26] }
-    ];
-  }
+  const relevantSections = sections.filter(s => s.main_category === mainCategory);
+  const sidebarTitle = mainCategory === 'plugins' ? "Seção de Plugins" : "Módulos do Curso";
 
   isEditing = false;
   
@@ -181,21 +192,28 @@ function renderClaudeCourse(activeModuleId = 1, savedContent = '') {
         <input type="text" placeholder="Pesquisar no curso...">
       </div>
       <div class="header-actions">
-        <div class="user-profile">
-          <div class="user-avatar" style="background: linear-gradient(135deg, #0ea5e9, #2563eb);">F</div>
-          <span style="font-size: 0.9rem; font-weight: 500;">Fernando Cerqueira</span>
+        <div class="user-profile" id="user-profile-btn">
+          <div class="user-avatar" style="background: linear-gradient(135deg, #0ea5e9, #2563eb);">${isAdmin ? 'A' : 'F'}</div>
+          <span style="font-size: 0.9rem; font-weight: 500;">${isAdmin ? 'Fernando (Admin)' : 'Fernando Cerqueira'}</span>
+          <i class="fas fa-chevron-down" style="font-size: 0.7rem; color: #64748b;"></i>
         </div>
       </div>
     </header>
 
     <div style="display: flex; flex: 1; overflow: hidden;">
       <aside class="course-sidebar">
-        <h3 class="font-outfit" style="margin-bottom: 2rem; font-size: 1.1rem; color: var(--text-primary); padding-left: 1rem;">${sidebarTitle}</h3>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem; padding: 0 1rem;">
+            <h3 class="font-outfit" style="font-size: 1.1rem; color: var(--text-primary); text-transform: uppercase; letter-spacing: 1px;">${sidebarTitle}</h3>
+            ${isAdmin ? `<button id="btn-add-section" class="editor-btn" style="padding: 0.4rem; min-width: auto;" title="Nova Área" data-category="${mainCategory}"><i class="fas fa-plus"></i></button>` : ''}
+        </div>
         <div class="course-nav">
-          ${groups.map(group => `
+          ${relevantSections.map(section => `
             <div class="course-group">
-              <div class="course-group-title">${group.title}</div>
-              ${CLAUDE_COURSE.filter(m => m.id >= group.range[0] && m.id <= group.range[1]).map(mod => `
+              <div style="display: flex; justify-content: space-between; align-items: center; padding-right: 0.5rem;">
+                <div class="course-group-title">${section.title}</div>
+                ${isAdmin ? `<button class="btn-add-module" data-section-id="${section.id}" style="background:transparent; border:none; color:var(--text-muted); cursor:pointer;" title="Novo Módulo"><i class="fas fa-plus-circle" style="font-size: 0.8rem;"></i></button>` : ''}
+              </div>
+              ${modules.filter(m => m.section_id === section.id).map(mod => `
                 <div class="course-nav-item ${mod.id === activeModuleId ? 'active' : ''}" data-id="${mod.id}">
                   <i class="${mod.icon || 'fas fa-chevron-right'}"></i>
                   <div style="flex: 1;">
@@ -219,6 +237,7 @@ function renderClaudeCourse(activeModuleId = 1, savedContent = '') {
                <div style="height: 1px; flex: 1; background: var(--border-color);"></div>
                
                <div class="editor-toolbar-actions" data-module-id="${activeModule.id}">
+                 ${isAdmin ? `
                  <button class="editor-btn" id="btn-edit" title="Editar conteúdo">
                    <i class="fas fa-pen"></i> Editar
                  </button>
@@ -231,9 +250,11 @@ function renderClaudeCourse(activeModuleId = 1, savedContent = '') {
                  <button class="editor-btn editor-btn-img" id="btn-add-img" style="display: none;" title="Adicionar imagem">
                    <i class="fas fa-image"></i> Imagem
                  </button>
+                 ` : ''}
                </div>
             </div>
-            <h1 class="font-outfit" style="font-size: clamp(1.75rem, 4vw, 2.5rem); line-height: 1.2;">${activeModule.title}</h1>
+            <h1 class="font-outfit" id="module-title-display" style="font-size: clamp(1.75rem, 4vw, 2.5rem); line-height: 1.2;">${activeModule.title}</h1>
+            ${isAdmin ? `<input type="text" id="module-title-input" class="editor-title-input" value="${activeModule.title}" style="display: none;">` : ''}
           </div>
           
           <div id="content-view" class="course-body" style="color: var(--text-secondary); line-height: 1.8; font-size: 1.05rem;">
@@ -253,10 +274,10 @@ function renderClaudeCourse(activeModuleId = 1, savedContent = '') {
           </div>
           
           <div style="margin-top: 5rem; padding-top: 2.5rem; border-top: 1px solid var(--border-color); display: flex; justify-content: space-between; gap: 1rem;">
-             <button class="nav-btn-prev" data-id="${activeModule.id - 1}" ${activeModule.id === 1 || activeModule.id === 101 ? 'disabled style="opacity: 0.3; cursor: not-allowed;"' : ''} style="background: var(--bg-tertiary); border: 1px solid var(--border-color); color: var(--text-primary); padding: 0.85rem 1.75rem; border-radius: 12px; cursor: pointer; display: flex; align-items: center; gap: 12px; font-weight: 600; transition: var(--transition-smooth);">
+             <button class="nav-btn-prev" data-id="${activeModule.id - 1}" style="background: var(--bg-tertiary); border: 1px solid var(--border-color); color: var(--text-primary); padding: 0.85rem 1.75rem; border-radius: 12px; cursor: pointer; display: flex; align-items: center; gap: 12px; font-weight: 600; transition: var(--transition-smooth);">
                  <i class="fas fa-arrow-left"></i> Anterior
              </button>
-             <button class="nav-btn-next" data-id="${activeModule.id + 1}" ${activeModule.id === 26 || activeModule.id === 109 ? 'disabled style="opacity: 0.3; cursor: not-allowed;"' : ''} style="background: var(--accent-primary); border: none; color: white; padding: 0.85rem 2rem; border-radius: 12px; cursor: pointer; font-weight: 600; display: flex; align-items: center; gap: 12px; transition: var(--transition-smooth); box-shadow: 0 10px 20px -5px var(--accent-glow);">
+             <button class="nav-btn-next" data-id="${activeModule.id + 1}" style="background: var(--accent-primary); border: none; color: white; padding: 0.85rem 2rem; border-radius: 12px; cursor: pointer; font-weight: 600; display: flex; align-items: center; gap: 12px; transition: var(--transition-smooth); box-shadow: 0 10px 20px -5px var(--accent-glow);">
                  Próxima Aula <i class="fas fa-arrow-right"></i>
              </button>
           </div>
@@ -267,9 +288,10 @@ function renderClaudeCourse(activeModuleId = 1, savedContent = '') {
 }
 
 async function loadAndRenderCourse(moduleId, mainContent) {
+  const courseData = await getCourseData();
   modulesWithContent = await getModulesWithContent();
   const savedContent = await getModuleContent(moduleId);
-  mainContent.innerHTML = renderClaudeCourse(moduleId, savedContent);
+  mainContent.innerHTML = renderClaudeCourse(moduleId, savedContent, courseData);
   enhanceCodeBlocks(document.getElementById('content-view'));
 }
 
@@ -296,7 +318,6 @@ function initEditor(moduleId) {
 
   // Handle pasted images automatically
   currentQuill.root.addEventListener('paste', async (e) => {
-    // Wait for the sync paste to complete then find images if they weren't handled as blobs
     setTimeout(async () => {
       const images = currentQuill.root.querySelectorAll('img[src^="data:image"]');
       for (const img of images) {
@@ -338,10 +359,16 @@ async function toggleEditMode(moduleId) {
     isEditing = true;
     viewEl.style.display = 'none';
     editorWrapper.style.display = 'block';
-    btnEdit.style.display = 'none';
-    btnSave.style.display = 'inline-flex';
-    btnCancel.style.display = 'inline-flex';
-    btnImg.style.display = 'inline-flex';
+    if(btnEdit) btnEdit.style.display = 'none';
+    if(btnSave) btnSave.style.display = 'inline-flex';
+    if(btnCancel) btnCancel.style.display = 'inline-flex';
+    if(btnImg) btnImg.style.display = 'inline-flex';
+    
+    const titleDisplay = document.getElementById('module-title-display');
+    const titleInput = document.getElementById('module-title-input');
+    if(titleDisplay) titleDisplay.style.display = 'none';
+    if(titleInput) titleInput.style.display = 'block';
+
     initEditor(moduleId);
     await loadEditorContent(moduleId);
   } else {
@@ -349,10 +376,15 @@ async function toggleEditMode(moduleId) {
     destroyEditor();
     viewEl.style.display = 'block';
     editorWrapper.style.display = 'none';
-    btnEdit.style.display = 'inline-flex';
-    btnSave.style.display = 'none';
-    btnCancel.style.display = 'none';
-    btnImg.style.display = 'none';
+    if(btnEdit) btnEdit.style.display = 'inline-flex';
+    if(btnSave) btnSave.style.display = 'none';
+    if(btnCancel) btnCancel.style.display = 'none';
+    if(btnImg) btnImg.style.display = 'none';
+
+    const titleDisplay = document.getElementById('module-title-display');
+    const titleInput = document.getElementById('module-title-input');
+    if(titleDisplay) titleDisplay.style.display = 'block';
+    if(titleInput) titleInput.style.display = 'none';
   }
 }
 
@@ -360,24 +392,17 @@ async function saveContent(moduleId, mainContent) {
   if (!currentQuill) return;
   let html = currentQuill.root.innerHTML;
   
-  // Auto-format markdown triple backticks to <pre>
   html = html.replace(/<p>\s*```[\s\S]*?<\/p>([\s\S]*?)<p>\s*```\s*<\/p>/gi, function(match, inner) {
       let clean = inner.replace(/<\/p>(\s*)<p>/gi, '\n').replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, '');
       return `<pre>${clean}</pre>`;
   });
   
-  // Quick fix for the famous "Resumo Visual" table if it's pasted as plain text paragraphs
-  if (html.includes('| Plan Mode |')) {
-    html = html.replace(/(<p>[^<]*?\| Plan Mode \|[^<]*?<\/p>)([\s\S]*?)(?=<p>[A-Za-z]+|<h|<div|$)/i, function(match) {
-        if(match.includes('<pre>')) return match;
-        let clean = match.replace(/<\/p>(\s*)<p>/gi, '\n').replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, '');
-        return `<pre>${clean}</pre>`;
-    });
-  }
-  
   const content = (html === '<p><br></p>' || html.trim() === '') ? '' : html;
   
-  const saved = await saveModuleContent(moduleId, content);
+  const titleInput = document.getElementById('module-title-input');
+  const metadata = titleInput ? { title: titleInput.value } : {};
+  
+  const saved = await saveModuleContent(moduleId, content, metadata);
   
   if (saved) {
     isEditing = false;
@@ -393,7 +418,7 @@ function addImageToEditor() {
   if (!currentQuill) return;
   const input = document.createElement('input');
   input.type = 'file';
-  input.accept = 'image/webp, image/png, image/jpeg, image/jpg, image/gif, .webp, .png, .jpg, .jpeg, .gif';
+  input.accept = 'image/*';
   input.multiple = true;
   input.onchange = () => {
     for (const file of input.files) {
@@ -410,13 +435,11 @@ function addImageToEditor() {
   input.click();
 }
 
-
 function showToast(message, type = 'success') {
   const toast = document.createElement('div');
   toast.className = 'toast-notification';
   if (type === 'error') {
     toast.style.background = 'linear-gradient(135deg, #ef4444, #dc2626)';
-    toast.style.boxShadow = '0 10px 30px rgba(239, 68, 68, 0.4)';
   }
   toast.innerHTML = message;
   document.body.appendChild(toast);
@@ -432,65 +455,211 @@ function enhanceCodeBlocks(container) {
   const blocks = container.querySelectorAll('pre, .ql-code-block-container');
   blocks.forEach(block => {
     if (block.parentElement.classList.contains('code-block-wrapper')) return;
-    
     const wrapper = document.createElement('div');
     wrapper.className = 'code-block-wrapper';
-    
     const header = document.createElement('div');
     header.className = 'code-block-header';
-    
-    const dots = document.createElement('div');
-    dots.className = 'code-block-dots';
-    dots.innerHTML = '<span></span><span></span><span></span>';
-    
+    header.innerHTML = '<div class="code-block-dots"><span></span><span></span><span></span></div>';
     const copyBtn = document.createElement('button');
     copyBtn.className = 'code-copy-btn';
     copyBtn.innerHTML = '<i class="far fa-copy"></i> Copiar';
     copyBtn.onclick = () => {
-      // For Quill 2.0 container, join the inner line divs. For <pre>, just use innerText.
-      const textToCopy = block.tagName === 'PRE' ? block.innerText : Array.from(block.children).map(node => node.innerText || node.textContent).join('\\n');
+      const textToCopy = block.tagName === 'PRE' ? block.innerText : Array.from(block.children).map(node => node.innerText || node.textContent).join('\n');
       navigator.clipboard.writeText(textToCopy);
       copyBtn.innerHTML = '<i class="fas fa-check" style="color: #22c55e;"></i> Copiado!';
-      setTimeout(() => {
-        copyBtn.innerHTML = '<i class="far fa-copy"></i> Copiar';
-      }, 2000);
+      setTimeout(() => { copyBtn.innerHTML = '<i class="far fa-copy"></i> Copiar'; }, 2000);
     };
-    
-    header.appendChild(dots);
     header.appendChild(copyBtn);
-    
     block.parentNode.insertBefore(wrapper, block);
     wrapper.appendChild(header);
-    
     block.classList.add('code-block-content');
     wrapper.appendChild(block);
   });
 }
 
+function showAddSectionModal(mainCategory) {
+    const modal = document.createElement('div');
+    modal.className = 'modal-overlay';
+    modal.innerHTML = `
+        <div class="login-modal">
+            <div class="modal-header">
+                <h3>Nova Área de Curso</h3>
+                <button class="close-modal"><i class="fas fa-times"></i></button>
+            </div>
+            <form id="section-form">
+                <div class="form-group">
+                    <label>Título da Área</label>
+                    <input type="text" id="section-title" required placeholder="Ex: Backend Elite">
+                </div>
+                <div class="form-group">
+                    <label>Ícone (FontAwesome)</label>
+                    <input type="text" id="section-icon" value="fas fa-folder">
+                </div>
+                <button type="submit" class="login-submit">Criar Área</button>
+            </form>
+        </div>
+    `;
+    document.body.appendChild(modal);
+    modal.querySelector('#section-form').onsubmit = async (e) => {
+        e.preventDefault();
+        const title = modal.querySelector('#section-title').value;
+        const icon = modal.querySelector('#section-icon').value;
+        const success = await addSection(title, mainCategory, icon);
+        if (success) {
+            showToast('Área criada com sucesso!');
+            modal.remove();
+            loadAndRenderCourse(getActiveModuleId(), document.querySelector('.main-wrapper'));
+        } else {
+            showToast('Erro ao criar área.', 'error');
+        }
+    };
+    modal.querySelector('.close-modal').onclick = () => modal.remove();
+}
+
+function showAddModuleModal(sectionId) {
+    const modal = document.createElement('div');
+    modal.className = 'modal-overlay';
+    modal.innerHTML = `
+        <div class="login-modal">
+            <div class="modal-header">
+                <h3>Novo Módulo</h3>
+                <button class="close-modal"><i class="fas fa-times"></i></button>
+            </div>
+            <form id="module-form">
+                <div class="form-group">
+                    <label>Título do Módulo</label>
+                    <input type="text" id="module-title" required placeholder="Ex: Intro ao Node.js">
+                </div>
+                <div class="form-group">
+                    <label>Descrição</label>
+                    <input type="text" id="module-desc" placeholder="Breve resumo...">
+                </div>
+                <div class="form-group">
+                    <label>Ícone (FontAwesome)</label>
+                    <input type="text" id="module-icon" value="fas fa-file-alt">
+                </div>
+                <button type="submit" class="login-submit">Criar Módulo</button>
+            </form>
+        </div>
+    `;
+    document.body.appendChild(modal);
+    modal.querySelector('#module-form').onsubmit = async (e) => {
+        e.preventDefault();
+        const title = modal.querySelector('#module-title').value;
+        const desc = modal.querySelector('#module-desc').value;
+        const icon = modal.querySelector('#module-icon').value;
+        const success = await addModule(sectionId, title, desc, icon);
+        if (success) {
+            showToast('Módulo criado com sucesso!');
+            modal.remove();
+            loadAndRenderCourse(success.id, document.querySelector('.main-wrapper'));
+        } else {
+            showToast('Erro ao criar módulo.', 'error');
+        }
+    };
+    modal.querySelector('.close-modal').onclick = () => modal.remove();
+}
+
+function showLoginModal() {
+    const modal = document.createElement('div');
+    modal.className = 'modal-overlay';
+    modal.innerHTML = `
+        <div class="login-modal">
+            <div class="modal-header">
+                <h3>Login Administrativo</h3>
+                <button class="close-modal"><i class="fas fa-times"></i></button>
+            </div>
+            <form id="login-form">
+                <div class="form-group">
+                    <label>Email</label>
+                    <input type="email" id="login-email" required placeholder="seu@email.com">
+                </div>
+                <div class="form-group">
+                    <label>Senha</label>
+                    <input type="password" id="login-password" required placeholder="••••••••">
+                </div>
+                <button type="submit" class="login-submit">Entrar</button>
+            </form>
+        </div>
+    `;
+    document.body.appendChild(modal);
+    modal.querySelector('#login-form').onsubmit = async (e) => {
+        e.preventDefault();
+        const email = modal.querySelector('#login-email').value;
+        const password = modal.querySelector('#login-password').value;
+        const { error } = await supabase.auth.signInWithPassword({ email, password });
+        if (error) {
+            showToast('Erro: ' + error.message, 'error');
+        } else {
+            showToast('Bem-vindo, Fernando! 🚀');
+            modal.remove();
+        }
+    };
+    modal.querySelector('.close-modal').onclick = () => modal.remove();
+}
+
+function showLoginMenu() {
+    const existing = document.getElementById('login-dropdown');
+    if (existing) { existing.remove(); return; }
+    const dropdown = document.createElement('div');
+    dropdown.id = 'login-dropdown';
+    dropdown.className = 'profile-dropdown';
+    if (session) {
+        dropdown.innerHTML = `
+            <div class="dropdown-header">
+                <p style="font-weight: 600;">${isAdmin ? 'Acesso Administrativo' : session.user.email}</p>
+                <p style="font-size: 0.75rem; color: var(--text-muted);">${isAdmin ? 'Administrador' : 'Usuário'}</p>
+            </div>
+            <div class="dropdown-divider"></div>
+            ${isAdmin ? `<button class="dropdown-item" id="btn-migrate"><i class="fas fa-database"></i> Migrar Estrutura</button><div class="dropdown-divider"></div>` : ''}
+            <button class="dropdown-item" id="btn-logout"><i class="fas fa-sign-out-alt"></i> Sair</button>
+        `;
+    } else {
+        dropdown.innerHTML = `<button class="dropdown-item" id="open-login-modal"><i class="fas fa-sign-in-alt"></i> Fazer Login (Admin)</button>`;
+    }
+    document.querySelector('.header-actions').appendChild(dropdown);
+    const closeMenu = (e) => {
+        if (!dropdown.contains(e.target) && !document.getElementById('user-profile-btn').contains(e.target)) {
+            dropdown.remove();
+            document.removeEventListener('mousedown', closeMenu);
+        }
+    };
+    document.addEventListener('mousedown', closeMenu);
+    dropdown.onclick = async (e) => {
+        if (e.target.closest('#btn-logout')) { await supabase.auth.signOut(); dropdown.remove(); showToast('Logout realizado!'); }
+        if (e.target.closest('#open-login-modal')) { dropdown.remove(); showLoginModal(); }
+        if (e.target.closest('#btn-migrate')) {
+            if(confirm('Migrar estrutura para o banco?')) {
+                const success = await migrateToSupabase();
+                if(success) { showToast('Migrado!'); location.reload(); }
+                else showToast('Erro!', 'error');
+            }
+        }
+    };
+}
+
+function renderHomeView() {
+    const mw = document.querySelector('.main-wrapper');
+    if (mw) mw.innerHTML = renderHome();
+}
+
 async function init() {
-  // Migrate localStorage data if it exists (one-time)
   await migrateFromLocalStorage();
   modulesWithContent = await getModulesWithContent();
-
   const mainContent = document.createElement('div');
   mainContent.className = 'main-wrapper';
   mainContent.innerHTML = renderHome();
-
   app.innerHTML = `
     <aside class="sidebar">
       <div class="sidebar-header">
-        <div class="logo-icon">
-          <i class="fas fa-brain" style="color: white; font-size: 1.2rem;"></i>
-        </div>
+        <div class="logo-icon"><i class="fas fa-brain" style="color: white; font-size: 1.2rem;"></i></div>
         <span class="logo-text font-outfit">NeuralStream</span>
       </div>
-      
       <nav class="sidebar-nav">
         <div class="nav-section">
           <p class="nav-label">Plataforma</p>
           <a href="#" class="nav-item active" id="nav-feed"><i class="fas fa-home"></i> Início</a>
         </div>
-
         <div class="nav-section">
           <p class="nav-label">Cursos Premium</p>
           <a href="#" class="nav-item" id="nav-claude"><i class="fas fa-robot"></i> Claude Code Pro</a>
@@ -499,80 +668,47 @@ async function init() {
       </nav>
     </aside>
   `;
-  
   app.appendChild(mainContent);
 
-  app.addEventListener('click', async (e) => {
+  app.onclick = async (e) => {
     if (e.target.closest('#nav-feed')) {
       e.preventDefault();
       document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
       document.getElementById('nav-feed').classList.add('active');
-      destroyEditor();
-      isEditing = false;
-      mainContent.innerHTML = renderHome();
+      destroyEditor(); isEditing = false;
+      renderHomeView();
     }
-
     if (e.target.closest('#nav-claude')) {
       e.preventDefault();
       document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
       document.getElementById('nav-claude').classList.add('active');
-      destroyEditor();
-      isEditing = false;
+      destroyEditor(); isEditing = false;
       await loadAndRenderCourse(1, mainContent);
     }
-
     if (e.target.closest('#nav-plugins')) {
       e.preventDefault();
       document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
       document.getElementById('nav-plugins').classList.add('active');
-      destroyEditor();
-      isEditing = false;
+      destroyEditor(); isEditing = false;
       await loadAndRenderCourse(101, mainContent);
     }
-
-    const courseNavItem = e.target.closest('.course-nav-item');
-    if (courseNavItem) {
-      const id = parseInt(courseNavItem.dataset.id);
-      destroyEditor();
-      isEditing = false;
-      await loadAndRenderCourse(id, mainContent);
+    const navItem = e.target.closest('.course-nav-item');
+    if (navItem) {
+      await loadAndRenderCourse(parseInt(navItem.dataset.id), mainContent);
     }
-
     const nextBtn = e.target.closest('.nav-btn-next');
-    if (nextBtn && !nextBtn.disabled) {
-      const id = parseInt(nextBtn.dataset.id);
-      destroyEditor();
-      isEditing = false;
-      await loadAndRenderCourse(id, mainContent);
-    }
-
+    if (nextBtn) await loadAndRenderCourse(parseInt(nextBtn.dataset.id), mainContent);
     const prevBtn = e.target.closest('.nav-btn-prev');
-    if (prevBtn && !prevBtn.disabled) {
-      const id = parseInt(prevBtn.dataset.id);
-      destroyEditor();
-      isEditing = false;
-      await loadAndRenderCourse(id, mainContent);
-    }
-
-    if (e.target.closest('#btn-edit')) {
-      const modId = getActiveModuleId();
-      await toggleEditMode(modId);
-    }
-
-    if (e.target.closest('#btn-save')) {
-      const modId = getActiveModuleId();
-      await saveContent(modId, mainContent);
-    }
-
-    if (e.target.closest('#btn-cancel')) {
-      const modId = getActiveModuleId();
-      await toggleEditMode(modId);
-    }
-
-    if (e.target.closest('#btn-add-img')) {
-      addImageToEditor();
-    }
-  });
+    if (prevBtn) await loadAndRenderCourse(parseInt(prevBtn.dataset.id), mainContent);
+    
+    if (e.target.closest('#btn-edit')) await toggleEditMode(getActiveModuleId());
+    if (e.target.closest('#btn-save')) await saveContent(getActiveModuleId(), mainContent);
+    if (e.target.closest('#btn-cancel')) await toggleEditMode(getActiveModuleId());
+    if (e.target.closest('#btn-add-img')) addImageToEditor();
+    if (e.target.closest('#user-profile-btn')) showLoginMenu();
+    if (e.target.closest('#btn-add-section')) showAddSectionModal(e.target.closest('#btn-add-section').dataset.category);
+    if (e.target.closest('.btn-add-module')) showAddModuleModal(parseInt(e.target.closest('.btn-add-module').dataset.sectionId));
+  };
 }
 
 init();
